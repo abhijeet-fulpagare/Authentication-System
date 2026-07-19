@@ -3,9 +3,10 @@ import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import config from "../config/config.js";
 import sessionModel from "../models/session.model.js";
-import crypto from "crypto";
-
-
+import crypto, { verify } from "crypto";
+import { sendEmail } from "../services/email.service.js";
+import { generateOtp, getOtpHtml } from "../utils/utils.js"
+import otpModel from "../models/otp.model.js";
 
 const registerController = async (req, res) => {
     try {
@@ -35,49 +36,37 @@ const registerController = async (req, res) => {
             password: hash,
         });
 
-        const refreshToken = jwt.sign(
-            { id: user._id },
-            config.JWT_SECRET,
-            { expiresIn: "7d" } //7days
-        );
+        const otp = generateOtp();
 
-        const refreshTokenHash = crypto
+        const otpHash = crypto
             .createHash("sha256")
-            .update(refreshToken)
+            .update(otp)
             .digest("hex");
 
-        const session = await sessionModel.create({
-            userId: user._id,
-            refreshTokenHash,
-            ip: req.ip,
-            userAgent: req.headers["user-agent"],
-            
-        })
-        const accessToken = jwt.sign(
-            {
-                id: user._id,
-                sessionId: session._id
-                
-             },
-            config.JWT_SECRET,
-            { expiresIn: "10m" }
+        await otpModel.deleteMany({ user: user._id });
+
+        await otpModel.create({
+            email: user.email,
+            user: user._id,
+            otpHash,
+            expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+        });
+
+        await sendEmail(
+            user.email,
+            "OTP Verification",
+            `Your OTP is ${otp}`,
+            getOtpHtml(otp)
         );
 
         
-
-        res.cookie("refreshToken", refreshToken, {
-            httpOnly: true,
-            secure: true,
-            sameSite: "strict",
-            maxAge: 7 * 24 *60 * 60 *1000
-        })
         res.status(201).json({
             message: "User created successfully",
             user: {
                 username: user.username,
                 email: user.email,
+                verified:user.verified
             },
-            accessToken,
         });
     } catch (err) {
         console.error(err);
@@ -93,13 +82,11 @@ const loginController = async (req, res) => {
 
         const { username, email, password } = req.body;
         
-        if (!username && !email)
-        {
-            return res.status(400).json({Message:"Username or email is required"})
+        if (!email) {
+            return res.status(400).json({ Message: "email is required" })
         }
         
-        if (!password)
-        {
+        if (!password) {
             return res.status(400).json({ Message: "password is required" })
         }
 
@@ -107,8 +94,7 @@ const loginController = async (req, res) => {
             $or: [{ username }, { email }]
         });
         
-        if (!user)
-        {
+        if (!user) {
             return res.status(400).json({ message: "User Does not exists" });
         }
 
@@ -120,6 +106,10 @@ const loginController = async (req, res) => {
             });
         }
 
+        if (!user.verified)
+        {
+            return res.status(401).json({ message: "Email is not verified" });
+        }
         
         const refreshToken = jwt.sign(
             { id: user._id },
@@ -365,4 +355,50 @@ const logoutAll = async (req, res) => {
     }
 };
 
-export { registerController, getMe, RefreshToken , logOut ,logoutAll , loginController};
+const verifyEmail = async (req, res) => {
+    try {
+        const { otp, email } = req.body;
+
+        const otpHash = crypto
+            .createHash("sha256")
+            .update(otp)
+            .digest("hex");
+
+        const otpDoc = await otpModel.findOne({
+            email,
+            otpHash,
+        });
+
+        if (!otpDoc) {
+            return res.status(400).json({
+                message: "Invalid OTP",
+            });
+        }
+
+        const user = await userModel.findByIdAndUpdate(
+            otpDoc.user,
+            { verified: true },
+            { new: true }
+        );
+
+        await otpModel.deleteMany({
+            user: otpDoc.user,
+        });
+
+        return res.status(200).json({
+            message: "User verified successfully",
+            user: {
+                username: user.username,
+                email: user.email,
+                verified: user.verified,
+            },
+        });
+    } catch (err) {
+        console.error(err);
+        return res.status(500).json({
+            message: "Internal Server Error",
+        });
+    }
+};
+
+export { registerController, getMe, RefreshToken, logOut, logoutAll, loginController, verifyEmail };
