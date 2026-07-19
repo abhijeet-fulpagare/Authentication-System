@@ -5,6 +5,8 @@ import config from "../config/config.js";
 import sessionModel from "../models/session.model.js";
 import crypto from "crypto";
 
+
+
 const registerController = async (req, res) => {
     try {
         const { username, email, password } = req.body;
@@ -58,7 +60,7 @@ const registerController = async (req, res) => {
                 
              },
             config.JWT_SECRET,
-            { expiresIn: "15m" }
+            { expiresIn: "10m" }
         );
 
         
@@ -85,6 +87,96 @@ const registerController = async (req, res) => {
         });
     }
 };
+
+const loginController = async (req, res) => {
+    try {
+
+        const { username, email, password } = req.body;
+        
+        if (!username && !email)
+        {
+            return res.status(400).json({Message:"Username or email is required"})
+        }
+        
+        if (!password)
+        {
+            return res.status(400).json({ Message: "password is required" })
+        }
+
+        const user = await userModel.findOne({
+            $or: [{ username }, { email }]
+        });
+        
+        if (!user)
+        {
+            return res.status(400).json({ message: "User Does not exists" });
+        }
+
+        const validUser = await bcrypt.compare(password, user.password);
+
+        if (!validUser) {
+            return res.status(400).json({
+                message: "Incorrect password",
+            });
+        }
+
+        
+        const refreshToken = jwt.sign(
+            { id: user._id },
+            config.JWT_SECRET,
+            { expiresIn: "7d" } //7days
+        );
+
+        const refreshTokenHash = crypto
+            .createHash("sha256")
+            .update(refreshToken)
+            .digest("hex");
+
+        const session = await sessionModel.create({
+            userId: user._id,
+            refreshTokenHash,
+            ip: req.ip,
+            userAgent: req.headers["user-agent"],
+
+        })
+        const accessToken = jwt.sign(
+            {
+                id: user._id,
+                sessionId: session._id
+
+            },
+            config.JWT_SECRET,
+            { expiresIn: "10m" }
+        );
+
+
+
+        res.cookie("refreshToken", refreshToken, {
+            httpOnly: true,
+            secure: true,
+            sameSite: "strict",
+            maxAge: 7 * 24 * 60 * 60 * 1000
+        })
+        res.status(200).json({
+            message: "user Login Successfully",
+            user: {
+                username: user.username,
+                email: user.email,
+            },
+            accessToken,
+        });
+
+
+
+
+    } catch (err) {
+        console.error(err);
+
+        res.status(500).json({
+            message: "Internal Server Error",
+        });
+    }
+}
 
 const getMe = async (req, res) => {
     
@@ -273,4 +365,4 @@ const logoutAll = async (req, res) => {
     }
 };
 
-export { registerController, getMe, RefreshToken , logOut };
+export { registerController, getMe, RefreshToken , logOut ,logoutAll , loginController};
