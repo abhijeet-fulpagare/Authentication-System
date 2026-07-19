@@ -2,6 +2,8 @@ import userModel from "../models/user.model.js";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import config from "../config/config.js";
+import sessionModel from "../models/session.model.js";
+import crypto from "crypto";
 
 const registerController = async (req, res) => {
     try {
@@ -31,17 +33,35 @@ const registerController = async (req, res) => {
             password: hash,
         });
 
-        const accessToken = jwt.sign(
-            { id: user._id },
-            config.JWT_SECRET,
-            { expiresIn: "15m" }
-        );
-
         const refreshToken = jwt.sign(
             { id: user._id },
             config.JWT_SECRET,
             { expiresIn: "7d" } //7days
         );
+
+        const refreshTokenHash = crypto
+            .createHash("sha256")
+            .update(refreshToken)
+            .digest("hex");
+
+        const session = await sessionModel.create({
+            userId: user._id,
+            refreshTokenHash,
+            ip: req.ip,
+            userAgent: req.headers["user-agent"],
+            
+        })
+        const accessToken = jwt.sign(
+            {
+                id: user._id,
+                sessionId: session._id
+                
+             },
+            config.JWT_SECRET,
+            { expiresIn: "15m" }
+        );
+
+        
 
         res.cookie("refreshToken", refreshToken, {
             httpOnly: true,
@@ -104,12 +124,12 @@ const getMe = async (req, res) => {
     }
 }
 
-const RefreshToken = (req, res) => {
+const RefreshToken = async(req, res) => {
     try {
         const refreshToken = req.cookies.refreshToken;
         
         if (!refreshToken) {
-            return res.status(401).json({ message: "Token do not exists" });
+            return res.status(401).json({ message: "Token invalid" });
         }
 
 
@@ -119,10 +139,34 @@ const RefreshToken = (req, res) => {
             return res.status(401).json({ message: "Token is invalid" });
         }
 
+        const refreshTokenHash = crypto
+            .createHash("sha256")
+            .update(refreshToken)
+            .digest("hex");
+        
+        const session = await sessionModel.findOne({
+            refreshTokenHash,
+            revoked:false
+        })
+
+        if (!session)
+        {
+            return res.status(400).json({ message: "Refresh Token invalid" });
+        }
+
         const newRefreshToken = jwt.sign({ id: decode.id }, config.JWT_SECRET, { expiresIn: "7d" });
 
 
-        const accessToken = jwt.sign({ id: decode.id }, config.JWT_SECRET,{expiresIn:"15m"});
+        const newRefreshTokenHash = crypto
+            .createHash("sha256")
+            .update(newRefreshToken)
+            .digest("hex");
+        
+        session.refreshTokenHash = newRefreshTokenHash;
+        await session.save();
+
+
+        const accessToken = jwt.sign({ id: decode.id , sessionId:session._id}, config.JWT_SECRET,{expiresIn:"15m"});
 
         res.cookie("refreshToken", newRefreshToken, {
             httpOnly: true,
@@ -142,4 +186,91 @@ const RefreshToken = (req, res) => {
     }
 }
 
-export { registerController, getMe, RefreshToken };
+const logOut = async (req, res) => {
+    
+    try {
+        const refreshToken = req.cookies.refreshToken;
+
+        if (!refreshToken)
+        {
+            return res.status(400).json({ message: "Refresh token do not exists" });
+        }
+
+        const refreshTokenHash = crypto
+            .createHash("sha256")
+            .update(refreshToken)
+            .digest("hex");
+
+        const session = await sessionModel.findOne({
+            refreshTokenHash,
+            revoked:false
+        })
+
+        if (!session)
+        {
+            return res.status(400).json({ message: "Session token invalid" });
+        }
+
+        session.revoked = true;
+        await session.save();
+
+        res.clearCookie("refreshToken");
+        return res.status(200).json({ message: "User logout Successfully" });
+
+    } catch (err) {
+        console.error(err);
+
+        res.status(500).json({
+            message: "Internal Server Error",
+        });
+    }
+
+    
+
+
+}
+
+const logoutAll = async (req, res) => {
+    try {
+        const refreshToken = req.cookies.refreshToken;
+
+        if (!refreshToken) {
+            return res.status(400).json({
+                message: "Refresh token is required",
+            });
+        }
+
+        const decoded = jwt.verify(refreshToken, config.JWT_SECRET);
+
+        await sessionModel.updateMany(
+            {
+                userId: decoded.id,
+                revoked: false,
+            },
+            {
+                $set: {
+                    revoked: true,
+                },
+            }
+        );
+
+        res.clearCookie("refreshToken", {
+            httpOnly: true,
+            secure: true,
+            sameSite: "strict",
+        });
+
+        return res.status(200).json({
+            message: "Logged out from all devices successfully",
+        });
+
+    } catch (err) {
+        console.error(err);
+
+        return res.status(500).json({
+            message: "Internal Server Error",
+        });
+    }
+};
+
+export { registerController, getMe, RefreshToken , logOut };

@@ -1,7 +1,7 @@
 import mongoose from "mongoose";
 
 const sessionSchema = new mongoose.Schema({
-    user: {
+    userId: {
         type: mongoose.Schema.Types.ObjectId,
         required: [true, "User name is requied"],
         ref:"user"
@@ -19,8 +19,8 @@ const sessionSchema = new mongoose.Schema({
         required: [true, "user agent is requied"]
     },
     revoked: {
-        type: String,
-        required: [true, "revoked is requied"]
+        type: Boolean,
+        default: false
     }
 }, {
     timestamps:true
